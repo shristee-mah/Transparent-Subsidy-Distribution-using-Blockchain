@@ -44,18 +44,22 @@ Each node is registered on the blockchain, and all actions are immutably logged.
 | Backend *(planned)*  | Node.js / Express|
 
 ---
-## Folder Structure
+## 📂 Project Structure
+
+```
 transparent-subsidy/
 ├── contracts/
-│   └── TransparentSubsidySystem.sol
+│   └── TransparentSubsidySystem.sol       # Smart contract source
 ├── scripts/
-│   └── deploy.js
+│   └── deploy.js                          # Deployment script
 ├── test/
-│   └── TransparentSubsidySystem.js
+│   └── TransparentSubsidySystem.js        # Unit tests
 ├── frontend/
-│   └── (React frontend later)
-├── hardhat.config.js
-├── package.json
+│   └── (React frontend later)             # Placeholder for UI
+├── hardhat.config.js                      # Hardhat configuration
+├── package.json                           # Project metadata and dependencies
+```
+
 
 ## 🧱 Smart Contract Overview
 
