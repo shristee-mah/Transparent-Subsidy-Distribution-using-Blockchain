@@ -66,31 +66,52 @@ contract TransparentSubsidySystem is AccessControl {
     }
 
     // ---------------- WORKFLOW ----------------
-    function processItem(uint256 itemId)
+    function processItem(uint256 itemId, string calldata ipfsHash)
         external
         onlyRole(PROCESSOR_ROLE)
     {
         require(items[itemId].stage == Stage.Created, "Invalid stage");
         items[itemId].stage = Stage.Processed;
+        
+        itemDocuments[itemId].push(Document({
+            stage: Stage.Processed,
+            ipfsHash: ipfsHash
+        }));
+        
         emit ItemProcessed(itemId);
+        emit DocumentUploaded(itemId, Stage.Processed, ipfsHash, msg.sender);
     }
 
-    function transportItem(uint256 itemId)
+    function transportItem(uint256 itemId, string calldata ipfsHash)
         external
         onlyRole(TRANSPORTER_ROLE)
     {
         require(items[itemId].stage == Stage.Processed, "Invalid stage");
         items[itemId].stage = Stage.Transported;
+
+        itemDocuments[itemId].push(Document({
+            stage: Stage.Transported,
+            ipfsHash: ipfsHash
+        }));
+
         emit ItemTransported(itemId);
+        emit DocumentUploaded(itemId, Stage.Transported, ipfsHash, msg.sender);
     }
 
-    function distributeItem(uint256 itemId)
+    function distributeItem(uint256 itemId, string calldata ipfsHash)
         external
         onlyRole(DISTRIBUTOR_ROLE)
     {
         require(items[itemId].stage == Stage.Transported, "Invalid stage");
         items[itemId].stage = Stage.Distributed;
+
+        itemDocuments[itemId].push(Document({
+            stage: Stage.Distributed,
+            ipfsHash: ipfsHash
+        }));
+
         emit ItemDistributed(itemId);
+        emit DocumentUploaded(itemId, Stage.Distributed, ipfsHash, msg.sender);
     }
 
     function claimSubsidy(uint256 itemId) external {
@@ -108,6 +129,8 @@ contract TransparentSubsidySystem is AccessControl {
         item.stage = Stage.Claimed;
 
         emit SubsidyClaimed(itemId, item.beneficiary, msg.sender);
+        // Emit DocumentUploaded to trigger orchestrator cleanup of the "Distributed" QR
+        emit DocumentUploaded(itemId, Stage.Claimed, "Claimed", msg.sender);
     }
 
     function cancelItem(uint256 itemId) 
@@ -153,5 +176,129 @@ contract TransparentSubsidySystem is AccessControl {
         returns (Document[] memory)
     {
         return itemDocuments[itemId];
+    }
+    // ---------------- BATCH LOGIC ----------------
+    struct Batch {
+        uint256 id;
+        uint256[] itemIds;
+        Stage stage;
+        string currentLocation; // Could be IPFS hash or plain text location data
+    }
+
+    uint256 public batchCount;
+    mapping(uint256 => Batch) public batches;
+    
+    // Mapping to track which batch an item belongs to (0 if none)
+    mapping(uint256 => uint256) public itemToBatch;
+
+    event BatchCreated(uint256 indexed batchId, uint256[] itemIds);
+    event BatchTransported(uint256 indexed batchId);
+    event BatchDistributed(uint256 indexed batchId);
+
+    function createBatch(uint256[] calldata _itemIds, string calldata location)
+        external
+        onlyRole(PROCESSOR_ROLE)
+    {
+        require(_itemIds.length > 0, "No items in batch");
+        batchCount++;
+        
+        Batch storage newBatch = batches[batchCount];
+        newBatch.id = batchCount;
+        newBatch.stage = Stage.Processed; // Assumes batch creation happens at Processing stage
+        newBatch.currentLocation = location;
+        newBatch.itemIds = _itemIds;
+
+        for (uint256 i = 0; i < _itemIds.length; i++) {
+            uint256 itemId = _itemIds[i];
+            require(items[itemId].stage == Stage.Created, "Item not in Created stage");
+            require(itemToBatch[itemId] == 0, "Item already in a batch");
+
+            // Update Item State
+            items[itemId].stage = Stage.Processed;
+            itemToBatch[itemId] = batchCount;
+            
+            // Log document/event for item?
+            // Optionally we can emit ItemProcessed here too, or rely on Batch event
+            emit ItemProcessed(itemId); 
+        }
+
+        emit BatchCreated(batchCount, _itemIds);
+    }
+
+    function transportBatch(uint256 batchId, string calldata ipfsHash)
+        external
+        onlyRole(TRANSPORTER_ROLE)
+    {
+        Batch storage batch = batches[batchId];
+        require(batch.stage == Stage.Processed, "Invalid batch stage");
+        
+        batch.stage = Stage.Transported;
+        
+        // Update all items
+        for (uint256 i = 0; i < batch.itemIds.length; i++) {
+            uint256 itemId = batch.itemIds[i];
+            // Sanity check: ensure item is still in sync?
+            if (items[itemId].stage == Stage.Processed) {
+                items[itemId].stage = Stage.Transported;
+                emit ItemTransported(itemId);
+                
+                // Add document to item history
+                itemDocuments[itemId].push(Document({
+                    stage: Stage.Transported,
+                    ipfsHash: ipfsHash
+                }));
+            }
+        }
+
+        emit BatchTransported(batchId);
+    }
+
+    function distributeBatch(uint256 batchId, string calldata ipfsHash)
+        external
+        onlyRole(DISTRIBUTOR_ROLE)
+    {
+        Batch storage batch = batches[batchId];
+        require(batch.stage == Stage.Transported, "Invalid batch stage");
+        
+        batch.stage = Stage.Distributed;
+        
+        // Update all items
+        for (uint256 i = 0; i < batch.itemIds.length; i++) {
+            uint256 itemId = batch.itemIds[i];
+            if (items[itemId].stage == Stage.Transported) {
+                items[itemId].stage = Stage.Distributed;
+                emit ItemDistributed(itemId);
+
+                itemDocuments[itemId].push(Document({
+                    stage: Stage.Distributed,
+                    ipfsHash: ipfsHash
+                }));
+            }
+        }
+
+        emit BatchDistributed(batchId);
+    }
+
+    // "Disaggregation" / Verification Step
+    // Allows Distributor to verify/unlock an item for claiming
+    function verifyIndividualClaim(uint256 batchId, uint256 itemId) 
+        external 
+        onlyRole(DISTRIBUTOR_ROLE) 
+    {
+        require(itemToBatch[itemId] == batchId, "Item not in this batch");
+        require(batches[batchId].stage == Stage.Distributed, "Batch not distributed");
+        
+        Item storage item = items[itemId];
+        require(item.stage == Stage.Distributed, "Item not ready");
+        require(!item.claimed, "Already claimed");
+
+        // Logic choice: Does this mark it as 'Claimed' directly? 
+        // Or just 'Ready'? 
+        // User VerifyIndividualClaim description: "allows the Distributor to mark an individual item as 'Claimed' without affecting the rest of the batch."
+        
+        item.claimed = true;
+        item.stage = Stage.Claimed;
+        
+        emit SubsidyClaimed(itemId, item.beneficiary, msg.sender);
     }
 }
