@@ -38,24 +38,20 @@ async function main() {
     // State machine logic: Items must move sequentially through enums to reach 'Distributed'
 
     // Transition: Created (0) -> Processed (1)
-    await (await contract.connect(processor).processItem(itemId)).wait();
+    await (await contract.connect(processor).processItem(itemId, "CID_PROCESSED_123")).wait();
     console.log("✔ Item Processed");
 
     // Transition: Processed (1) -> Transported (2)
-    await (await contract.connect(processor).transportItem(itemId)).wait();
+    await (await contract.connect(processor).transportItem(itemId, "CID_TRANSPORTED_456")).wait();
     console.log("✔ Item Transported");
 
     // Transition: Transported (2) -> Distributed (3)
-    await (await contract.connect(processor).distributeItem(itemId)).wait();
+    await (await contract.connect(processor).distributeItem(itemId, "CID_DISTRIBUTED_789")).wait();
     console.log("✔ Item Distributed (Ready for claim)");
 
-    console.log("\nSTEP 6 — Add Document");
-    // Attach an off-chain reference (IPFS hash) to the itemId for transparency/auditing
-    // Now requires Stage param: 0=Created, 1=Processed, 2=Transported, 3=Distributed, 4=Claimed, 5=Cancelled
-    // Let's say this is a Processed stage document (Enum index 1)
-    const logTx = await contract.connect(processor).addDocument(itemId, 1, "IPFS_HASH_12345");
-    await logTx.wait();
-    console.log("✔ Document added to Item ID:", itemId.toString());
+    console.log("\nSTEP 6 — Document Verification (Atomic)");
+    // Documents are now added automatically during transitions.
+    // We can verify them at the end.
 
     console.log("\nSTEP 7 — Claim Subsidy");
     try {
